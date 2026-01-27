@@ -34,8 +34,14 @@ def is_it_a_scam(text):
     keywords = ["blocked", "verify", "urgent", "upi", "account", "kyc"]
     return any(word in text.lower() for word in keywords)
 
+from fastapi import Body
+
 @app.post("/api/honeypot")
-async def handle_message(request: ScamRequest, x_api_key: str = Header(None)):
+async def handle_message(
+    request: ScamRequest = Body(None),
+    x_api_key: str = Header(None)
+):
+
     # Security Check [cite: 113-115]
     if x_api_key != "TECH_KNIGHTS_006":
         raise HTTPException(status_code=401, detail="Invalid API key")
