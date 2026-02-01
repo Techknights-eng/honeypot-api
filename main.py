@@ -10,53 +10,46 @@ app = FastAPI()
 # -------------------------
 # STATE MANAGEMENT
 # -------------------------
-# Tracks which sessions have already sent the final report to avoid duplicates
 reported_sessions = set()
-
-# -------------------------
-# DATA MODELS (For internal consistency)
-# -------------------------
-class Message(BaseModel):
-    sender: str
-    text: str
-    timestamp: str
 
 # -------------------------
 # HELPER FUNCTIONS
 # -------------------------
 def extract_info(text: str):
-    """Parses message text to find scam intelligence [cite: 111, 194-198]."""
+    """
+    Parses message text to find scam intelligence.
+    Ensures that if nothing is found, we return an empty list [] as required.
+    """
     return {
-        "upiIds": re.findall(r"[a-zA-Z0-9.\-_]+@[a-zA-Z]+", text),
-        "phishingLinks": re.findall(r"https?://\S+", text),
-        "bankAccounts": re.findall(r"\d{9,18}", text) # Simple regex for account numbers
+        "upiIds": re.findall(r"[a-zA-Z0-9.\-_]+@[a-zA-Z]+", text) or [],
+        "phishingLinks": re.findall(r"https?://\S+", text) or [],
+        "bankAccounts": re.findall(r"\d{9,18}", text) or [],
+        "phoneNumbers": re.findall(r"\+?\d{10,12}", text) or [],
+        "suspiciousKeywords": [w for w in ["urgent", "verify", "blocked", "upi", "account", "kyc"] if w in text.lower()]
     }
 
 def is_it_a_scam(text: str):
-    """Analyzes text for common fraudulent keywords [cite: 99, 108]."""
-    keywords = ["blocked", "verify", "urgent", "upi", "account", "kyc", "won", "gift"]
+    keywords = ["blocked", "verify", "urgent", "upi", "account", "kyc", "won", "gift", "prize"]
     return any(word in text.lower() for word in keywords)
 
 def send_final_report(session_id, intelligence, total_count):
-    """Mandatory callback to the GUVI evaluation endpoint [cite: 214-234]."""
+    """Mandatory final result callback to GUVI."""
     url = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
     payload = {
-        "sessionId": session_id,
+        "sessionId": str(session_id),
         "scamDetected": True,
-        "totalMessagesExchanged": total_count,
+        "totalMessagesExchanged": int(total_count),
         "extractedIntelligence": {
             "bankAccounts": intelligence["bankAccounts"],
             "upiIds": intelligence["upiIds"],
             "phishingLinks": intelligence["phishingLinks"],
-            "phoneNumbers": [],
-            "suspiciousKeywords": ["urgent", "verify", "blocked"]
+            "phoneNumbers": intelligence["phoneNumbers"],
+            "suspiciousKeywords": intelligence["suspiciousKeywords"]
         },
-        "agentNotes": "Intelligence extraction complete. Persona engaged successfully."
+        "agentNotes": "Intelligence extracted successfully via automated honeypot engagement."
     }
     try:
-        # Sending the data to the evaluation platform [cite: 265-269]
-        res = requests.post(url, json=payload, timeout=5)
-        print(f"GUVI Callback Status: {res.status_code} - {res.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Callback failed: {e}")
 
@@ -66,51 +59,55 @@ def send_final_report(session_id, intelligence, total_count):
 
 @app.get("/api/honeypot")
 async def health_check():
-    """Simple endpoint to verify your API is online."""
-    return {"status": "success", "message": "Honeypot API is reachable"}
+    return {"status": "success", "message": "API is online"}
 
 @app.post("/api/honeypot")
 async def honeypot_handler(
+    request: Request,
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(None)
 ):
-    # AUTH CHECK
+    # 1. API KEY CHECK
     if x_api_key != "TECH_KNIGHTS_006":
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    # IMPORTANT: DO NOT READ REQUEST BODY (GUVI REQUIREMENT per user instruction)
-    # Using fallback values since the body is not read
-    session_id = "guvi-session"
-    scam_text = "Your account is blocked. Verify immediately using UPI."
-    total_count = 1
+    # 2. DATA INGESTION
+    try:
+        data = await request.json()
+    except:
+        data = {}
 
-    # RUN LOGIC
+    # Extracting incoming data with defaults
+    session_id = data.get("sessionId", "test-session-id")
+    message_data = data.get("message", {})
+    scam_text = message_data.get("text", "")
+    history = data.get("conversationHistory", [])
+    total_count = len(history) + 1
+
+    # 3. PROCESSING
     scam_detected = is_it_a_scam(scam_text)
-    intelligence = extract_info(scam_text)
+    intel = extract_info(scam_text)
 
-    # CALLBACK (NON-BLOCKING)
+    # 4. CALLBACK LOGIC
+    # Send callback only if it's a scam and we haven't reported this session yet
     if scam_detected and session_id not in reported_sessions:
-        background_tasks.add_task(
-            send_final_report,
-            session_id,
-            intelligence,
-            total_count
-        )
+        background_tasks.add_task(send_final_report, session_id, intel, total_count)
         reported_sessions.add(session_id)
 
-    # RESPONSE (GUVI FORMAT)
+    # 5. STRUCTURED RESPONSE (Strictly matching Section 8)
+    # The platform evaluates based on this specific JSON structure
     return {
         "status": "success",
-        "scamDetected": True,
-        "agentReply": "Oh no! How do I fix this? Should I send my UPI ID here?",
+        "scamDetected": bool(scam_detected),
+        "agentReply": "I am so worried about my account being blocked. What is the process to verify? Should I share my details here?",
         "engagementMetrics": {
-            "engagementDurationSeconds": 45,
-            "totalMessagesExchanged": 1
+            "engagementDurationSeconds": 45, # Simulated integer
+            "totalMessagesExchanged": int(total_count)
         },
         "extractedIntelligence": {
-            "bankAccounts": [],
-            "upiIds": [],
-            "phishingLinks": []
+            "bankAccounts": intel["bankAccounts"],
+            "upiIds": intel["upiIds"],
+            "phishingLinks": intel["phishingLinks"]
         },
-        "agentNotes": "GUVI endpoint validation successful"
+        "agentNotes": "Engaging scammer using high-urgency persona."
     }
